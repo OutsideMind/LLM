@@ -1,0 +1,16 @@
+streamlit
+#You need Torch with CUDA
+torch
+torchvision
+torchaudio
+diffusers
+openai
+requests
+Pillow
+safetensors
+huggingface-hub
+accelerate
+xformers
+psutil
+transformers
+peft
