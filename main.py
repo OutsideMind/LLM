@@ -63,7 +63,7 @@ def main():
         handle_image_generation(active_chat, width, height)
 
     elif mode == "Training":
-        # Заменяем старую логику на вызов нового интерфейса
+        # Render training interface
         render_training_interface()
 
 

@@ -1,3 +1,5 @@
+"""A module for training LoRA (Low-Rank Adaptation) models for diffusion pipelines."""
+
 import time
 import torch
 import streamlit as st
@@ -10,15 +12,34 @@ from PIL import Image
 from safetensors.torch import save_file
 from src.config import LORA_DIR, TRAINING_DATA_PATH
 import gc
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Callable
 from pathlib import Path
 from copy import deepcopy
 
 
 class ModelTrainer:
+    """A class for training LoRA models on diffusion pipelines.
+
+    Attributes:
+        training_in_progress (bool): Flag indicating if training is in progress.
+        progress (float): Current training progress (0 to 1).
+        current_epoch (int): Current epoch number during training.
+        loss_history (List[float]): History of loss values during training.
+        base_pipeline: The base diffusion pipeline for training.
+        train_unet: The UNet model being trained with LoRA.
+        placeholder_token (str): The token used as placeholder in prompts.
+        current_lora_name (str): Name of the currently training LoRA model.
+        callbacks (List[Callable]): List of callback functions for training updates.
+    """
+
     def __init__(self, base_pipeline=None):
+        """Initialize the ModelTrainer.
+
+        Args:
+            base_pipeline: The base diffusion pipeline to train on (optional).
+        """
         self.training_in_progress = False
-        self.progress = 0
+        self.progress = 0.0
         self.current_epoch = 0
         self.loss_history = []
         self.base_pipeline = base_pipeline
@@ -27,31 +48,65 @@ class ModelTrainer:
         self.current_lora_name = ""
         self.callbacks = []
 
+        # Ensure directories exist
         Path(LORA_DIR).mkdir(exist_ok=True)
         Path(TRAINING_DATA_PATH).mkdir(exist_ok=True)
 
     def is_ready(self) -> bool:
+        """Check if the trainer is ready for training.
+
+        Returns:
+            bool: True if base pipeline is loaded and ready, False otherwise.
+        """
         return self.base_pipeline is not None and self.base_pipeline.text_encoder is not None
 
     def set_base_pipeline(self, pipeline) -> bool:
+        """Set the base diffusion pipeline for training.
+
+        Args:
+            pipeline: The diffusion pipeline to use as base.
+
+        Returns:
+            bool: True if pipeline was set successfully, False otherwise.
+        """
         self.base_pipeline = pipeline
         return self.is_ready()
 
-    def add_callback(self, callback: callable):
+    def add_callback(self, callback: Callable):
+        """Add a callback function for training updates.
+
+        Args:
+            callback (Callable): Function to call during training updates.
+        """
         self.callbacks.append(callback)
 
-    def setup_lora(self, placeholder_token: str, lora_rank: int = 8,
-                   lora_alpha: int = 32, target_lora: Optional[str] = None) -> bool:
-        """Настройка LoRA с улучшенной совместимостью архитектур"""
+    def setup_lora(
+        self,
+        placeholder_token: str,
+        lora_rank: int = 8,
+        lora_alpha: int = 32,
+        target_lora: Optional[str] = None
+    ) -> bool:
+        """Configure LoRA with improved architectural compatibility.
+
+        Args:
+            placeholder_token (str): Token to use as placeholder in prompts.
+            lora_rank (int): Rank of LoRA matrices. Defaults to 8.
+            lora_alpha (int): Alpha parameter for LoRA. Defaults to 32.
+            target_lora (Optional[str]): Existing LoRA model to load. Defaults to None.
+
+        Returns:
+            bool: True if setup was successful, False otherwise.
+        """
         if not self.is_ready():
-            st.error("Базовый пайплайн не загружен или неполный!")
+            st.error("Base pipeline is not loaded or incomplete!")
             return False
 
         try:
-            # Очистка предыдущих ресурсов
+            # Clean up previous resources
             self._cleanup_resources()
 
-            # Конфигурация LoRA
+            # LoRA configuration
             lora_config = LoraConfig(
                 r=lora_rank,
                 lora_alpha=lora_alpha,
@@ -60,20 +115,20 @@ class ModelTrainer:
                 bias="none"
             )
 
-            # Используем копию UNet из пайплайна
+            # Use a copy of the pipeline's UNet
             self.train_unet = deepcopy(self.base_pipeline.unet)
 
-            # Применяем LoRA
+            # Apply LoRA
             self.train_unet.add_adapter(lora_config)
 
-            # Загрузка весов если есть существующая модель
+            # Load weights if existing model is specified
             if target_lora:
                 lora_path = Path(LORA_DIR) / f"{target_lora}.safetensors"
                 if lora_path.exists():
                     from safetensors.torch import load_file
                     lora_weights = load_file(lora_path)
 
-                    # Применяем только веса LoRA
+                    # Apply only LoRA weights
                     for name, param in self.train_unet.named_parameters():
                         if name in lora_weights:
                             param.data.copy_(lora_weights[name])
@@ -81,7 +136,7 @@ class ModelTrainer:
             self.train_unet.train()
             self.train_unet.to("cuda")
 
-            # Оптимизации памяти
+            # Memory optimizations
             self.train_unet.enable_gradient_checkpointing()
             torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -91,8 +146,22 @@ class ModelTrainer:
             st.error(f"LoRA setup error: {str(e)}")
             return False
 
-    def create_lora_from_existing(self, source_lora: str, new_name: str, new_placeholder: str) -> bool:
-        """Создание новой LoRA на основе существующей"""
+    def create_lora_from_existing(
+        self,
+        source_lora: str,
+        new_name: str,
+        new_placeholder: str
+    ) -> bool:
+        """Create a new LoRA model based on an existing one.
+
+        Args:
+            source_lora (str): Name of the source LoRA model.
+            new_name (str): Name for the new LoRA model.
+            new_placeholder (str): Placeholder token for the new model.
+
+        Returns:
+            bool: True if creation was successful, False otherwise.
+        """
         try:
             source_path = Path(LORA_DIR) / f"{source_lora}.safetensors"
             if not source_path.exists():
@@ -107,7 +176,7 @@ class ModelTrainer:
             weights = load_file(source_path)
             save_file(weights, dest_path)
 
-            # Регистрируем новую модель в ImageGenerator
+            # Register the new model in ImageGenerator
             self._register_new_lora(
                 name=new_name,
                 filename=new_filename,
@@ -119,21 +188,45 @@ class ModelTrainer:
             st.error(f"Failed to clone LoRA: {str(e)}")
             return False
 
-    def train_model(self, dataset_path: str, placeholder_token: str,
-                    lora_name: str, epochs: int = 50, lr: float = 1e-4,
-                    batch_size: int = 1, resolution: int = 768,
-                    lora_rank: int = 8, lora_alpha: int = 32,
-                    target_lora: Optional[str] = None) -> bool:
-        """Финальная версия метода обучения с исправлением всех ошибок"""
+    def train_model(
+        self,
+        dataset_path: str,
+        placeholder_token: str,
+        lora_name: str,
+        epochs: int = 50,
+        lr: float = 1e-4,
+        batch_size: int = 1,
+        resolution: int = 768,
+        lora_rank: int = 8,
+        lora_alpha: int = 32,
+        target_lora: Optional[str] = None
+    ) -> bool:
+        """Train a LoRA model with the given parameters.
+
+        Args:
+            dataset_path (str): Path to the training dataset.
+            placeholder_token (str): Token to use as placeholder in prompts.
+            lora_name (str): Name for the trained LoRA model.
+            epochs (int): Number of training epochs. Defaults to 50.
+            lr (float): Learning rate. Defaults to 1e-4.
+            batch_size (int): Batch size for training. Defaults to 1.
+            resolution (int): Resolution for input images. Defaults to 768.
+            lora_rank (int): Rank of LoRA matrices. Defaults to 8.
+            lora_alpha (int): Alpha parameter for LoRA. Defaults to 32.
+            target_lora (Optional[str]): Existing LoRA model to fine-tune. Defaults to None.
+
+        Returns:
+            bool: True if training was successful, False otherwise.
+        """
         try:
-            # Проверка доступности GPU
+            # Check GPU availability
             if not torch.cuda.is_available():
-                st.error("Обучение требует GPU! Проверьте ваше окружение.")
+                st.error("Training requires GPU! Please check your environment.")
                 return False
 
-            # Проверка готовности пайплайна
+            # Check pipeline readiness
             if not self.is_ready():
-                st.error("Базовый пайплайн не готов к обучению!")
+                st.error("Base pipeline is not ready for training!")
                 return False
 
             self.current_lora_name = lora_name
@@ -144,10 +237,10 @@ class ModelTrainer:
             self.current_epoch = 0
             self.loss_history = []
 
-            # Подготовка данных
+            # Prepare dataset
             dataset = self._create_dataset(dataset_path, size=resolution)
             if not dataset:
-                st.error("Не удалось создать датасет для обучения")
+                st.error("Failed to create training dataset")
                 return False
 
             dataloader = torch.utils.data.DataLoader(
@@ -157,13 +250,13 @@ class ModelTrainer:
                 num_workers=0
             )
 
-            # Оптимизатор
+            # Optimizer
             optimizer = torch.optim.AdamW(
                 self.train_unet.parameters(),
                 lr=lr
             )
 
-            # Шумовой scheduler
+            # Noise scheduler
             noise_scheduler = DDPMScheduler(
                 num_train_timesteps=1000,
                 beta_start=0.0001,
@@ -171,18 +264,18 @@ class ModelTrainer:
                 beta_schedule="linear"
             )
 
-            # Цикл обучения
+            # Training loop
             total_steps = epochs * len(dataloader)
             current_step = 0
 
-            # Получим необходимые компоненты
+            # Get required components
             device = self.train_unet.device
             dtype = self.train_unet.dtype
             vae = self.base_pipeline.vae
             tokenizers = [self.base_pipeline.tokenizer]
             text_encoders = [self.base_pipeline.text_encoder]
 
-            # Проверяем наличие второго текстового энкодера (для SDXL)
+            # Check for second text encoder (for SDXL)
             if hasattr(self.base_pipeline, 'text_encoder_2'):
                 tokenizers.append(self.base_pipeline.tokenizer_2)
                 text_encoders.append(self.base_pipeline.text_encoder_2)
@@ -196,26 +289,26 @@ class ModelTrainer:
                     if not self.training_in_progress:
                         return False
 
-                    # Проверка наличия данных в батче
+                    # Check for empty batch
                     if not batch or "pixel_values" not in batch or "input_ids" not in batch:
-                        st.warning("Пропущен пустой батч")
+                        st.warning("Skipping empty batch")
                         continue
 
-                    # Перенос данных на устройство
+                    # Move data to device
                     pixel_values = batch["pixel_values"].to(device)
                     input_ids = batch["input_ids"].to(device)
 
-                    # Преобразование изображений в латентное пространство
+                    # Convert images to latent space
                     with torch.no_grad():
-                        # Определяем тип данных VAE
+                        # Determine VAE data type
                         vae_dtype = next(vae.parameters()).dtype
                         pixel_values = pixel_values.to(vae_dtype)
 
-                        # Кодируем изображения в латентное пространство
+                        # Encode images to latent space
                         latents = vae.encode(pixel_values).latent_dist.sample()
                         latents = latents * vae.config.scaling_factor
 
-                        # Подготовка текстовых входов
+                        # Prepare text inputs
                         text_inputs = []
                         for tokenizer in tokenizers:
                             text_input = tokenizer(
@@ -227,44 +320,44 @@ class ModelTrainer:
                             )
                             text_inputs.append(text_input.input_ids.to(device))
 
-                        # Получение текстовых эмбеддингов
+                        # Get text embeddings
                         text_embeddings_list = []
                         for i, text_encoder in enumerate(text_encoders):
                             encoder_output = text_encoder(text_inputs[i])
 
-                            # Обработка разных форматов вывода
+                            # Handle different output formats
                             if hasattr(encoder_output, 'last_hidden_state'):
-                                # Современный формат: объект с атрибутами
+                                # Modern format: object with attributes
                                 text_embedding = encoder_output.last_hidden_state
                             elif isinstance(encoder_output, tuple):
-                                # Старый формат: кортеж (last_hidden_state, ...)
+                                # Old format: tuple (last_hidden_state, ...)
                                 text_embedding = encoder_output[0]
                             else:
-                                # Неизвестный формат
-                                raise ValueError(f"Неподдерживаемый формат вывода энкодера: {type(encoder_output)}")
+                                # Unknown format
+                                raise ValueError(f"Unsupported encoder output format: {type(encoder_output)}")
 
-                            # Приведение к 3D тензору
+                            # Convert to 3D tensor if needed
                             if len(text_embedding.shape) == 2:
                                 text_embedding = text_embedding.unsqueeze(1)
 
                             text_embeddings_list.append(text_embedding)
 
-                        # Объединение эмбеддингов
+                        # Combine embeddings
                         if len(text_embeddings_list) > 1:
-                            # Для SDXL: объединяем по последнему измерению
+                            # For SDXL: concatenate along last dimension
                             text_embeddings = torch.cat(text_embeddings_list, dim=-1)
                         else:
                             text_embeddings = text_embeddings_list[0]
 
-                        # Получение pooled_output
+                        # Get pooled output
                         if len(text_encoders) > 1:
-                            # Для второго энкодера
+                            # For second encoder
                             if hasattr(encoder_output, 'pooler_output'):
                                 pooled_output = encoder_output.pooler_output
                             elif isinstance(encoder_output, tuple) and len(encoder_output) > 1:
                                 pooled_output = encoder_output[1]
                             else:
-                                # Создаем заглушку
+                                # Create dummy output
                                 pooled_output = torch.zeros(
                                     (pixel_values.shape[0], 1280),
                                     device=device,
@@ -277,24 +370,24 @@ class ModelTrainer:
                                 dtype=vae_dtype
                             )
 
-                    # Генерация шума в латентном пространстве
+                    # Generate noise in latent space
                     noise = torch.randn_like(latents, device=device)
                     timesteps = torch.randint(
                         0, noise_scheduler.num_train_timesteps,
                         (latents.shape[0],), device=device
                     ).long()
 
-                    # Добавление шума к латентам
+                    # Add noise to latents
                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                    # Прямой проход
+                    # Forward pass
                     with torch.autocast(device.type, enabled=True):
-                        # Подготовка additional conditions для SDXL
+                        # Prepare additional conditions for SDXL
                         original_size = (resolution, resolution)
                         crops_coords_top_left = (0, 0)
                         target_size = (resolution, resolution)
 
-                        # Создаем add_time_ids
+                        # Create add_time_ids
                         add_time_ids = list(original_size + crops_coords_top_left + target_size)
                         add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
                         add_time_ids = add_time_ids.repeat(noisy_latents.shape[0], 1)
@@ -304,7 +397,7 @@ class ModelTrainer:
                             "time_ids": add_time_ids
                         }
 
-                        # Вызов UNet
+                        # Call UNet
                         noise_pred = self.train_unet(
                             noisy_latents,
                             timesteps,
@@ -314,7 +407,7 @@ class ModelTrainer:
 
                         loss = torch.nn.functional.mse_loss(noise_pred, noise)
 
-                    # Обратное распространение
+                    # Backward pass
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.train_unet.parameters(), 1.0)
@@ -325,11 +418,11 @@ class ModelTrainer:
                     batch_count += 1
                     self.progress = current_step / total_steps
 
-                    # Вызов callback-функций
+                    # Call callbacks
                     for callback in self.callbacks:
                         callback(self)
 
-                # Статистика эпохи
+                # Epoch statistics
                 if batch_count > 0:
                     avg_loss = epoch_loss / batch_count
                     self.loss_history.append(avg_loss)
@@ -337,22 +430,30 @@ class ModelTrainer:
                 else:
                     st.warning(f"Epoch {self.current_epoch} - No batches processed")
 
-            # Сохранение весов LoRA
+            # Save LoRA weights
             self._save_lora_weights(lora_name)
             return True
 
         except Exception as e:
-            st.error(f"Ошибка обучения: {str(e)}")
+            st.error(f"Training error: {str(e)}")
             import traceback
             st.error(traceback.format_exc())
             return False
         finally:
-            # Очистка ресурсов
+            # Clean up resources
             self.training_in_progress = False
             self._cleanup_resources()
 
     def _create_sdxl_dataset(self, image_folder: str, size: int = 768) -> Optional[Dataset]:
-        """Создание датасета с обработкой изображений для SDXL"""
+        """Create a dataset with image processing for SDXL.
+
+        Args:
+            image_folder (str): Path to folder containing training images.
+            size (int): Target size for images. Defaults to 768.
+
+        Returns:
+            Optional[Dataset]: The created dataset or None if failed.
+        """
         try:
             class ImageDataset(Dataset):
                 def __init__(self, folder, tokenizer, placeholder, size):
@@ -393,15 +494,23 @@ class ModelTrainer:
                 size
             )
         except Exception as e:
-            st.error(f"Ошибка создания датасета: {str(e)}")
+            st.error(f"Dataset creation error: {str(e)}")
             return None
 
     def _create_dataset(self, image_folder: str, size: int = 768) -> Optional[Dataset]:
-        """Создание датасета с обработкой изображений"""
+        """Create a dataset with image processing.
+
+        Args:
+            image_folder (str): Path to folder containing training images.
+            size (int): Target size for images. Defaults to 768.
+
+        Returns:
+            Optional[Dataset]: The created dataset or None if failed.
+        """
         try:
-            # Проверка существования папки
+            # Check if folder exists
             if not os.path.exists(image_folder):
-                st.error(f"Папка с данными не существует: {image_folder}")
+                st.error(f"Data folder does not exist: {image_folder}")
                 return None
 
             class ImageDataset(Dataset):
@@ -443,11 +552,15 @@ class ModelTrainer:
                 size
             )
         except Exception as e:
-            st.error(f"Ошибка создания датасета: {str(e)}")
+            st.error(f"Dataset creation error: {str(e)}")
             return None
 
     def _save_lora_weights(self, lora_name: str):
-        """Сохранение весов LoRA"""
+        """Save LoRA weights to file.
+
+        Args:
+            lora_name (str): Name for the LoRA model.
+        """
         try:
             lora_weights = {}
             for name, param in self.train_unet.named_parameters():
@@ -458,7 +571,7 @@ class ModelTrainer:
             lora_path = Path(LORA_DIR) / lora_filename
             save_file(lora_weights, lora_path)
 
-            # Регистрация новой модели
+            # Register the new model
             self._register_new_lora(
                 name=lora_name,
                 filename=lora_filename,
@@ -466,17 +579,33 @@ class ModelTrainer:
                 description=f"Trained on {time.strftime('%d.%m.%Y')}"
             )
         except Exception as e:
-            st.error(f"Ошибка сохранения весов: {str(e)}")
+            st.error(f"Error saving weights: {str(e)}")
 
-    def _register_new_lora(self, name: str, filename: str, placeholder: str, description: str = ""):
-        """Регистрирует новую LoRA модель в системе"""
+    def _register_new_lora(
+        self,
+        name: str,
+        filename: str,
+        placeholder: str,
+        description: str = ""
+    ) -> bool:
+        """Register a new LoRA model in the system.
+
+        Args:
+            name (str): Name of the model.
+            filename (str): Filename of the model weights.
+            placeholder (str): Placeholder token for the model.
+            description (str): Description of the model. Defaults to "".
+
+        Returns:
+            bool: True if registration was successful, False otherwise.
+        """
         try:
-            # Проверяем, что image_generator существует в сессии
+            # Check if image_generator exists in session
             if "image_generator" not in st.session_state:
-                st.error("ImageGenerator не инициализирован!")
+                st.error("ImageGenerator is not initialized!")
                 return False
 
-            # Добавляем в ImageGenerator
+            # Add to ImageGenerator
             st.session_state.image_generator.add_dynamic_lora(
                 name=name,
                 filename=filename,
@@ -485,11 +614,11 @@ class ModelTrainer:
             )
             return True
         except Exception as e:
-            st.error(f"Ошибка регистрации модели: {str(e)}")
+            st.error(f"Model registration error: {str(e)}")
             return False
 
     def _cleanup_resources(self):
-        """Очистка ресурсов и освобождение памяти"""
+        """Clean up resources and free memory."""
         self.training_in_progress = False
         if self.train_unet is not None:
             del self.train_unet
@@ -498,7 +627,11 @@ class ModelTrainer:
         gc.collect()
 
     def get_training_progress(self) -> Dict:
-        """Возвращает текущий прогресс обучения"""
+        """Get current training progress.
+
+        Returns:
+            Dict: Dictionary containing training progress information.
+        """
         return {
             "progress": self.progress,
             "epoch": self.current_epoch,
@@ -508,6 +641,6 @@ class ModelTrainer:
         }
 
     def stop_training(self):
-        """Остановка текущего процесса обучения"""
+        """Stop the current training process."""
         self.training_in_progress = False
         self._cleanup_resources()

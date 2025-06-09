@@ -8,14 +8,14 @@ from ui.utraining import render_training_interface
 
 
 def setup_page():
-    """Настройка страницы Streamlit"""
+    """Configure Streamlit page settings and inject custom CSS."""
     st.set_page_config(
         page_title="AI Assistant Pro",
         page_icon="🤖",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    # Инжект пользовательских стилей
+    # Inject custom CSS styles
     st.markdown("""
     <style>
         .chat-container {
@@ -34,7 +34,7 @@ def setup_page():
 
 
 def initialize_session_state():
-    """Инициализация состояния сессии"""
+    """Initialize session state variables."""
     if "model_manager" not in st.session_state:
         st.session_state.model_manager = ModelManager()
 
@@ -47,24 +47,24 @@ def initialize_session_state():
     if "active_chat" not in st.session_state:
         st.session_state.active_chat: str = None
 
-    # Инициализация счетчика запросов
+    # Initialize request counter
     if "request_count" not in st.session_state:
         st.session_state.request_count = 0
 
 
 def render_sidebar_controls() -> str:
-    """Создание элементов управления в боковой панели"""
+    """Render sidebar controls and return selected operation mode."""
     with st.sidebar:
         st.header("Control Panel")
 
-        # Выбор модели
+        # Model selection
         selected_model = st.selectbox(
             "Model:",
             list(MODEL_MAPPING.keys()),
             key="model_selector"
         )
 
-        # Кнопка применения модели
+        # Model application button
         if st.button("🔄 Apply Model", key="apply_model"):
             with st.spinner(f"Loading {selected_model}..."):
                 try:
@@ -75,7 +75,7 @@ def render_sidebar_controls() -> str:
 
         st.markdown("---")
         st.header("Operation Mode")
-        # Переключатель режимов
+        # Mode selection
         mode = st.radio(
             "Select mode:",
             ["Text", "Image Generation", "Training"],
@@ -83,10 +83,10 @@ def render_sidebar_controls() -> str:
         )
 
         st.markdown("---")
-        # Управление чатами
+        # Chat management controls
         _render_chat_controls()
 
-        # Выбор активного чата
+        # Active chat selection
         if st.session_state.chats:
             _render_active_chat_selector()
 
@@ -96,7 +96,7 @@ def render_sidebar_controls() -> str:
 
 
 def _render_chat_controls():
-    """Управление чатами"""
+    """Render chat management UI elements."""
     col1, col2 = st.columns([3, 1])
     with col1:
         if st.button("✨ New Chat", key="new_chat"):
@@ -105,21 +105,28 @@ def _render_chat_controls():
             st.session_state.active_chat = chat_id
             st.rerun()
     with col2:
-        if st.session_state.chats and st.button("🗑️", key="delete_chat",
-                                                help="Delete current chat"):
+        if st.session_state.chats and st.button(
+            "🗑",
+            key="delete_chat",
+            help="Delete current chat"
+        ):
             if st.session_state.active_chat:
                 del st.session_state.chats[st.session_state.active_chat]
-                st.session_state.active_chat = next(iter(st.session_state.chats), None)
+                st.session_state.active_chat = next(
+                    iter(st.session_state.chats),
+                    None
+                )
                 st.rerun()
 
 
 def _render_active_chat_selector():
-    """Выбор активного чата"""
+    """Render UI for selecting active chat."""
     options = list(st.session_state.chats.keys())
     selected = st.selectbox(
         "Active Chats:",
         options=options,
-        index=options.index(st.session_state.active_chat) if st.session_state.active_chat else 0,
+        index=options.index(st.session_state.active_chat)
+            if st.session_state.active_chat else 0,
         format_func=lambda x: f"Chat {options.index(x) + 1}",
         key="chat_selector"
     )
@@ -127,7 +134,7 @@ def _render_active_chat_selector():
 
 
 def render_chat_container(active_chat: dict):
-    """Отображение истории чата"""
+    """Render chat message container with scrollable history."""
     with st.container():
         st.markdown('<div class="chat-container">', unsafe_allow_html=True)
 
@@ -138,23 +145,23 @@ def render_chat_container(active_chat: dict):
 
 
 def _render_message(msg: dict):
-    """Отображение отдельного сообщения"""
+    """Render individual chat message based on content type."""
     with st.chat_message(msg["role"]):
         if msg.get("type") == "image":
             st.image(msg["content"])
             if msg.get("seed"):
-                st.caption(f"**Seed:** `{msg['seed']}`")
+                st.caption(f"Seed: {msg['seed']}")
         elif msg.get("type") == "image_prompt":
-            st.markdown(f"**Prompt:** {msg['content']}")
+            st.markdown(f"Prompt: {msg['content']}")
             if msg.get("negative_prompt"):
-                st.caption(f"**Exclusions:** {msg['negative_prompt']}")
+                st.caption(f"Exclusions: {msg['negative_prompt']}")
         else:
             content = format_math(process_thoughts(msg["content"]))
             st.markdown(content, unsafe_allow_html=True)
 
 
 def handle_no_active_chat():
-    """Обработка отсутствия активных чатов"""
+    """Handle UI state when no chats exist."""
     st.info("Create a new chat using the sidebar controls")
     if st.button("Create First Chat"):
         chat_id = str(uuid.uuid4())
@@ -164,24 +171,28 @@ def handle_no_active_chat():
 
 
 def handle_text_mode(active_chat: dict):
-    """Режим текстового взаимодействия"""
+    """Process text-based interactions."""
     if user_input := st.chat_input("Type your message..."):
-        # Добавление сообщения пользователя
+        # Add user message to chat history
         active_chat["messages"].append({"role": "user", "content": user_input})
 
         with st.chat_message("assistant"):
-            # Генерация ответа
+            # Generate and display response
             try:
-                response = st.session_state.model_manager.generate_response(user_input)
+                response = st.session_state.model_manager.generate_response(
+                    user_input
+                )
                 st.markdown(response)
-                active_chat["messages"].append({"role": "assistant", "content": response})
+                active_chat["messages"].append(
+                    {"role": "assistant", "content": response}
+                )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 
 
 def handle_image_mode(active_chat: dict):
-    """Режим генерации изображений"""
-    # Импорт здесь, чтобы избежать циклических зависимостей
+    """Handle image generation workflow."""
+    # Local import to avoid circular dependencies
     from ui.uimage import (
         render_lora_settings,
         render_image_size_settings,
@@ -189,13 +200,15 @@ def handle_image_mode(active_chat: dict):
         handle_image_generation
     )
 
-    # Настройки в боковой панели
+    # Render settings in sidebar
     with st.sidebar:
         render_lora_settings()
         width, height = render_image_size_settings()
-        steps, guidance_scale, seed, strength, uploaded_image = render_advanced_image_settings()
+        steps, guidance_scale, seed, strength, uploaded_image = (
+            render_advanced_image_settings()
+        )
 
-    # Сохранение параметров в сессии
+    # Store parameters in session state
     st.session_state.update({
         'steps': steps,
         'guidance_scale': guidance_scale,
@@ -206,30 +219,30 @@ def handle_image_mode(active_chat: dict):
         'height': height
     })
 
-    # Обработка генерации изображений
+    # Handle image generation process
     handle_image_generation(active_chat, width, height)
 
 
 def main():
-    """Главная функция приложения"""
+    """Main application entry point."""
     setup_page()
     initialize_session_state()
 
-    # Определение режима работы
+    # Determine operation mode
     mode = render_sidebar_controls()
 
-    # Обработка отсутствия чатов
+    # Handle no active chat scenario
     if not st.session_state.active_chat:
         handle_no_active_chat()
         return
 
-    # Получение активного чата
+    # Get active chat
     active_chat = st.session_state.chats[st.session_state.active_chat]
 
-    # Отображение истории чата
+    # Display chat history
     render_chat_container(active_chat)
 
-    # Обработка выбранного режима
+    # Process selected mode
     if mode == "Text":
         handle_text_mode(active_chat)
     elif mode == "Image Generation":

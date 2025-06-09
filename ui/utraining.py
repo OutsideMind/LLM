@@ -1,3 +1,5 @@
+"""Streamlit interface for training and managing LoRA models."""
+
 import streamlit as st
 import time
 import torch
@@ -8,29 +10,33 @@ from src.model_trainer import ModelTrainer
 
 
 def render_training_interface():
-    """Основной интерфейс для создания и управления LoRA моделями"""
+    """Render the main interface for creating and managing LoRA models.
+
+    This function handles the main training dashboard, including GPU availability checks,
+    model initialization, and tab navigation.
+    """
     st.header("🔄 Model Training Dashboard")
 
-    # Проверка доступности GPU
+    # Check GPU availability
     if not torch.cuda.is_available():
-        st.error("⚠️ Требуется GPU с поддержкой CUDA")
-        st.info("Обучение невозможно без NVIDIA GPU")
+        st.error("⚠️ CUDA-compatible GPU required")
+        st.info("Training requires an NVIDIA GPU")
         return
 
-    # Инициализация тренера
+    # Initialize trainer
     if "model_trainer" not in st.session_state:
         if "image_generator" in st.session_state and st.session_state.image_generator.text2img_pipe:
             st.session_state.model_trainer = ModelTrainer(
                 st.session_state.image_generator.text2img_pipe
             )
         else:
-            st.warning("Сначала загрузите модель генерации изображений")
+            st.warning("Please load the image generation model first")
             return
 
-    # Проверка готовности пайплайна
+    # Check pipeline readiness
     if not st.session_state.model_trainer.is_ready():
-        st.warning("Модель изображений не загружена!")
-        if st.button("Загрузить модель по умолчанию"):
+        st.warning("Image model not loaded!")
+        if st.button("Load Default Model"):
             st.session_state.image_generator.load_models()
             st.rerun()
         return
@@ -52,7 +58,10 @@ def render_training_interface():
 
 
 def render_training_tab():
-    """Вкладка для обучения новых моделей"""
+    """Render the tab for training new LoRA models.
+
+    This includes the training form, parameter configuration, and training initiation.
+    """
     st.subheader("Create New LoRA Model")
 
     with st.form("training_form", clear_on_submit=False):
@@ -62,25 +71,25 @@ def render_training_tab():
             lora_name = st.text_input(
                 "Model Name",
                 value="my_style",
-                help="Уникальное имя для вашей модели"
+                help="Unique name for your model"
             )
             placeholder = st.text_input(
                 "Trigger Phrase",
                 value="<my-style>",
-                help="Токен для активации стиля в промпте"
+                help="Token to activate the style in prompts"
             )
 
-            # Выбор существующей модели для дообучения
+            # Select existing model for fine-tuning
             available_loras = get_available_loras()
             target_lora = st.selectbox(
                 "Continue Training (optional)",
                 options=[""] + list(available_loras.keys()),
                 format_func=lambda x: x if x else "-- Create New --",
-                help="Выберите существующую LoRA для дообучения"
+                help="Select existing LoRA for fine-tuning"
             )
 
         with col2:
-            # Расширенные параметры обучения
+            # Advanced training parameters
             with st.expander("⚙️ Advanced Settings", expanded=True):
                 epochs = st.slider("Epochs", 10, 200, 50)
                 lr = st.slider(
@@ -101,10 +110,10 @@ def render_training_tab():
                 "Training Images (5-20 images)",
                 type=["jpg", "png", "jpeg"],
                 accept_multiple_files=True,
-                help="Изображения в одном стиле для обучения"
+                help="Images in consistent style for training"
             )
 
-        # Кнопка запуска обучения
+        # Training start button
         submit = st.form_submit_button("Start Training")
 
         if submit:
@@ -114,43 +123,46 @@ def render_training_tab():
                 batch_size, resolution, target_lora
             )
 
-    # Отображение прогресса обучения
+    # Display training progress
     render_training_progress()
 
 
 def render_cloning_tab():
-    """Вкладка для клонирования моделей"""
+    """Render the tab for cloning existing LoRA models.
+
+    Allows users to create copies of existing models for experimentation.
+    """
     st.subheader("Clone Existing LoRA Model")
-    st.info("Создайте копию существующей модели для экспериментов")
+    st.info("Create a copy of an existing model for experimentation")
 
     available_loras = get_available_loras()
 
     if not available_loras:
-        st.warning("Нет доступных моделей для клонирования")
+        st.warning("No models available for cloning")
         return
 
     with st.form("clone_form"):
         source_lora = st.selectbox(
             "Source Model",
             options=list(available_loras.keys()),
-            help="Модель которую будем клонировать"
+            help="Model to clone"
         )
 
         new_name = st.text_input(
             "New Model Name",
             value=f"{source_lora}_copy",
-            help="Уникальное имя для новой модели"
+            help="Unique name for the new model"
         )
 
         new_placeholder = st.text_input(
             "New Trigger Phrase",
             value=f"<{source_lora}-copy>",
-            help="Новый токен активации"
+            help="New activation token"
         )
 
         if st.form_submit_button("Clone Model"):
             if new_name in available_loras:
-                st.error(f"Модель '{new_name}' уже существует!")
+                st.error(f"Model '{new_name}' already exists!")
             else:
                 with st.spinner("Cloning model..."):
                     success = st.session_state.image_generator.clone_lora(
@@ -160,22 +172,25 @@ def render_cloning_tab():
                     )
 
                     if success:
-                        st.success(f"Модель {source_lora} успешно клонирована как {new_name}")
+                        st.success(f"Model {source_lora} cloned as {new_name}")
                         st.balloons()
                         time.sleep(1)
                         st.rerun()
 
 
 def render_management_tab():
-    """Вкладка для управления моделями"""
+    """Render the model management tab.
+
+    Displays available models and provides deletion functionality.
+    """
     st.subheader("LoRA Model Management")
     available_loras = get_available_loras()
 
     if not available_loras:
-        st.info("Нет созданных моделей")
+        st.info("No models created yet")
         return
 
-    # Таблица с моделями
+    # Model table
     st.write("### Available Models")
     for model_name, config in available_loras.items():
         with st.expander(f"📁 {model_name}"):
@@ -190,21 +205,24 @@ def render_management_tab():
                 }, expanded=False)
 
             with col2:
-                # Проверяем, что модель не является предустановленной
+                # Prevent deletion of preset models
                 if model_name not in LORA_MODELS:
-                    if st.button("🗑️", key=f"del_{model_name}", help="Удалить модель"):
+                    if st.button("🗑️", key=f"del_{model_name}", help="Delete model"):
                         delete_lora_model(model_name)
 
 
 def render_training_progress():
-    """Отображение прогресса обучения"""
+    """Display the current training progress.
+
+    Shows progress bar, loss chart, and provides stop training functionality.
+    """
     if hasattr(st.session_state, "training_started") and st.session_state.training_started:
         trainer = st.session_state.model_trainer
         progress = trainer.get_training_progress()
 
         st.subheader("Training Progress")
 
-        # Прогресс бар и метрики
+        # Progress bar and metrics
         progress_col, metrics_col = st.columns([3, 1])
 
         with progress_col:
@@ -217,7 +235,7 @@ def render_training_progress():
             st.metric("Epoch", f"{progress['epoch']}")
             st.metric("Current LoRA", progress.get("current_lora", ""))
 
-        # Кнопка остановки
+        # Stop button
         if st.button("⛔ Stop Training"):
             trainer.stop_training()
             st.session_state.training_started = False
@@ -225,25 +243,33 @@ def render_training_progress():
 
 
 def get_available_loras() -> Dict:
-    """Получение списка доступных LoRA моделей"""
+    """Get available LoRA models.
+
+    Returns:
+        Dict: Dictionary of available LoRA models with their configurations.
+    """
     if "image_generator" in st.session_state:
         return st.session_state.image_generator.all_loras
     return {}
 
 
 def delete_lora_model(model_name: str):
-    """Удаление модели с подтверждением"""
-    # Защита от удаления предустановленных моделей
+    """Delete a LoRA model with confirmation.
+
+    Args:
+        model_name (str): Name of the model to delete.
+    """
+    # Prevent deletion of preset models
     if model_name in LORA_MODELS:
-        st.error("Нельзя удалять предустановленные модели!")
+        st.error("Cannot delete preset models!")
         return
 
     if st.session_state.image_generator.delete_dynamic_lora(model_name):
-        st.success(f"Модель {model_name} удалена!")
+        st.success(f"Model {model_name} deleted!")
         time.sleep(1)
         st.rerun()
     else:
-        st.error("Ошибка при удалении модели")
+        st.error("Error deleting model")
 
 
 def validate_and_start_training(
@@ -258,46 +284,59 @@ def validate_and_start_training(
         resolution: int,
         target_lora: Optional[str] = None
 ):
-    """Валидация и запуск процесса обучения"""
-    # Проверка входных данных
+    """Validate inputs and start the training process.
+
+    Args:
+        lora_name (str): Name for the new model
+        placeholder (str): Trigger phrase for the model
+        uploaded_images (List): List of uploaded training images
+        epochs (int): Number of training epochs
+        lr (float): Learning rate
+        lora_rank (int): LoRA rank parameter
+        lora_alpha (int): LoRA alpha parameter
+        batch_size (int): Training batch size
+        resolution (int): Image resolution for training
+        target_lora (Optional[str]): Existing model to fine-tune
+    """
+    # Input validation
     errors = []
 
     if not lora_name:
-        errors.append("Укажите имя модели")
+        errors.append("Please specify a model name")
 
-    # Проверка placeholder
+    # Validate placeholder format
     if not placeholder.strip() or not placeholder.startswith("<") or not placeholder.endswith(">"):
         st.warning("⚠️ Trigger phrase should be in format <your-style>")
-        placeholder = f"<{lora_name}-style>"  # Автоматическое исправление
+        placeholder = f"<{lora_name}-style>"  # Auto-correct
         st.info(f"Using auto-generated trigger: {placeholder}")
 
     if len(uploaded_images) < 3:
-        errors.append("Загрузите минимум 3 изображения")
+        errors.append("Upload at least 3 images")
     elif len(uploaded_images) > 30:
-        errors.append("Слишком много изображений (макс. 30)")
+        errors.append("Too many images (max 30)")
 
-    # Проверка существования имени
+    # Check for existing model name
     if lora_name in get_available_loras():
-        errors.append(f"Модель '{lora_name}' уже существует")
+        errors.append(f"Model '{lora_name}' already exists")
 
-    # Вывод ошибок
+    # Display errors
     if errors:
         for error in errors:
             st.error(error)
         return
 
-    # Создание временной директории для обучения
+    # Create temporary training directory
     session_id = str(int(time.time()))
     temp_folder = Path(TRAINING_DATA_PATH) / session_id
     temp_folder.mkdir(parents=True, exist_ok=True)
 
-    # Сохранение изображений
+    # Save uploaded images
     for i, img in enumerate(uploaded_images):
         img_path = temp_folder / f"img_{i}.jpg"
         with open(img_path, "wb") as f:
             f.write(img.getbuffer())
 
-    # Запуск обучения
+    # Start training
     with st.spinner("Starting training process..."):
         st.session_state.training_started = True
 
@@ -315,7 +354,7 @@ def validate_and_start_training(
         )
 
         if success:
-            st.success("Обучение успешно завершено!")
+            st.success("Training completed successfully!")
             st.balloons()
         else:
-            st.error("Ошибка в процессе обучения")
+            st.error("Error during training")
