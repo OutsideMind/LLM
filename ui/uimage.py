@@ -1,7 +1,7 @@
 import streamlit as st
 import random
 import torch
-from config import LORA_MODELS, SD_MODEL_NAME
+from src.config import *
 import traceback
 
 

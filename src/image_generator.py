@@ -1,19 +1,117 @@
 import gc
 import uuid
+import json
+import time
 from typing import List, Dict, Optional
 import torch
 from PIL import Image
-from diffusers import EulerAncestralDiscreteScheduler, StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline
+from diffusers import (
+    EulerAncestralDiscreteScheduler,
+    StableDiffusionXLImg2ImgPipeline,
+    StableDiffusionXLPipeline
+)
 import streamlit as st
-from config import *
+from pathlib import Path
+from safetensors.torch import load_file, save_file
+from src.config import *
+
 
 class ImageGenerator:
-    """Main class for handling image generation pipelines with LoRA support"""
+    """Enhanced image generator with advanced LoRA management"""
+
     def __init__(self):
-        self.text2img_pipe = None # Text-to-image pipeline
-        self.img2img_pipe = None # Image-to-image pipeline
-        self.loaded_loras: List[Dict] = [] # Active LoRA adapters
-        self.load_models() # Initialize pipelines on creation
+        self.text2img_pipe = None
+        self.img2img_pipe = None
+        self.loaded_loras: List[Dict] = []
+        self.dynamic_loras: Dict = self._load_dynamic_loras()
+        self.all_loras = {**LORA_MODELS, **self.dynamic_loras}
+        self.lora_cache: Dict[str, Dict] = {}  # Cache for loaded LoRA weights
+        self.load_models()
+
+    def _load_dynamic_loras(self) -> Dict:
+        """Load dynamic LoRAs with error handling"""
+        try:
+            if Path(LORA_CONFIG_FILE).exists():
+                with open(LORA_CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            st.error(f"LoRA config error: {str(e)}")
+        return {}
+
+    def _save_dynamic_loras(self):
+        """Save dynamic LoRAs with atomic write"""
+        temp_file = f"{LORA_CONFIG_FILE}.tmp"
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(self.dynamic_loras, f, indent=2)
+            os.replace(temp_file, LORA_CONFIG_FILE)
+        except Exception as e:
+            st.error(f"Failed to save LoRAs: {str(e)}")
+
+    def add_dynamic_lora(self, name: str, filename: str, placeholder: str,
+                         description: str = "", base_model: Optional[str] = None):
+        """Add new LoRA with metadata"""
+        self.dynamic_loras[name] = {
+            "filename": filename,
+            "description": description,
+            "placeholder": placeholder,
+            "created": time.strftime("%d.%m.%Y"),
+            "base_model": base_model or SD_MODEL_NAME
+        }
+        self.all_loras = {**LORA_MODELS, **self.dynamic_loras}
+        self._save_dynamic_loras()
+
+    def delete_dynamic_lora(self, name: str):
+        """Safely remove LoRA model"""
+        if name in self.dynamic_loras:
+            # Remove from active if loaded
+            if any(l["name"] == name for l in self.loaded_loras):
+                self.remove_lora(name)
+
+            # Remove physical file
+            lora_path = Path(LORA_DIR) / self.dynamic_loras[name]["filename"]
+            if lora_path.exists():
+                lora_path.unlink()
+
+            # Clean cache if loaded
+            if name in self.lora_cache:
+                del self.lora_cache[name]
+
+            # Update configs
+            del self.dynamic_loras[name]
+            self.all_loras = {**LORA_MODELS, **self.dynamic_loras}
+            self._save_dynamic_loras()
+
+    def clone_lora(self, source_name: str, new_name: str, new_placeholder: str) -> bool:
+        """Create new LoRA based on existing one"""
+        if source_name not in self.all_loras:
+            st.error(f"Source LoRA '{source_name}' not found")
+            return False
+
+        src_path = Path(LORA_DIR) / self.all_loras[source_name]["filename"]
+        if not src_path.exists():
+            st.error(f"Source file not found: {src_path}")
+            return False
+
+        new_filename = f"{new_name}.safetensors"
+        dest_path = Path(LORA_DIR) / new_filename
+
+        try:
+            # Load and save with new metadata
+            weights = load_file(src_path)
+            save_file(weights, dest_path)
+
+            self.add_dynamic_lora(
+                name=new_name,
+                filename=new_filename,
+                placeholder=new_placeholder,
+                description=f"Cloned from {source_name}",
+                base_model=self.all_loras[source_name].get("base_model")
+            )
+            return True
+        except Exception as e:
+            st.error(f"Failed to clone LoRA: {str(e)}")
+            return False
 
     def load_models(self):
         """Initialize SDXL pipelines with LoRA adapters and memory optimizations"""
@@ -95,6 +193,78 @@ class ImageGenerator:
         else:
             st.error("CUDA unavailable - Image generation requires NVIDIA GPU")
 
+    def _load_and_fuse_loras(self):
+        """Internal method to handle LoRA loading with error handling"""
+        # Unfuse first if needed
+        if hasattr(self.text2img_pipe, "unfuse_lora"):
+            try:
+                self.text2img_pipe.unfuse_lora()
+            except Exception:
+                pass  # Ignore if already unfused
+
+        # Clear any existing adapters - FIXED
+        if hasattr(self.text2img_pipe, 'delete_adapters'):
+            try:
+                # Get current adapters list
+                if hasattr(self.text2img_pipe, 'get_list_adapters'):
+                    current_adapters = list(self.text2img_pipe.get_list_adapters().keys())
+                    if current_adapters:
+                        self.text2img_pipe.delete_adapters(current_adapters)
+            except Exception as e:
+                print(f"[WARNING] Failed to delete existing adapters: {str(e)}")
+
+        adapter_names = []
+        adapter_weights = []
+
+        # Load each LoRA
+        for lora in self.loaded_loras:
+            lora_name = lora["name"]
+            lora_meta = self.all_loras.get(lora_name)
+            if not lora_meta:
+                print(f"[WARNING] LoRA metadata not found for: {lora_name}. Skipping.")
+                continue
+
+            lora_filename = lora_meta["filename"]
+            lora_path = Path(LORA_DIR) / lora_filename
+
+            # Check if file exists
+            if not lora_path.exists():
+                print(f"[WARNING] LoRA file not found: {lora_path}. Skipping.")
+                continue
+
+            # Use cached weights if available, else load
+            if lora_name in self.lora_cache:
+                weights = self.lora_cache[lora_name]
+            else:
+                try:
+                    weights = load_file(lora_path)
+                    self.lora_cache[lora_name] = weights
+                except Exception as e:
+                    print(f"[ERROR] Failed to load LoRA weights for {lora_name}: {str(e)}")
+                    continue
+
+            # Try to load the adapter into the pipeline
+            try:
+                self.text2img_pipe.load_lora_weights(
+                    str(lora_path),
+                    adapter_name=lora_name
+                )
+                adapter_names.append(lora_name)
+                adapter_weights.append(lora["weight"])
+            except Exception as e:
+                print(f"[ERROR] Failed to load adapter {lora_name}: {str(e)}")
+
+        # Set adapters and fuse if any were loaded
+        if adapter_names:
+            try:
+                self.text2img_pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                self.text2img_pipe.fuse_lora()
+                print(f"Loaded and fused LoRAs: {', '.join(adapter_names)}")
+            except Exception as e:
+                print(f"[ERROR] Failed to set or fuse adapters: {str(e)}")
+        else:
+            print("No LoRAs loaded for fusion.")
+
     def add_lora(self, lora_name: str, weight: float = 1.0):
         """Add a LoRA adapter to the pipeline and reload models
 
@@ -129,6 +299,17 @@ class ImageGenerator:
             "weight": max(0.0, min(weight, 2.0))  # Clamped weight value
         })
         self.load_models()  # Reinitialize pipeline with new adapter
+
+    def get_lora_metadata(self, lora_name: str) -> Optional[Dict]:
+        """Get complete LoRA metadata"""
+        return self.all_loras.get(lora_name)
+
+    def validate_lora_compatibility(self, lora_name: str) -> bool:
+        """Check if LoRA is compatible with current base model"""
+        lora_meta = self.get_lora_metadata(lora_name)
+        if not lora_meta:
+            return False
+        return lora_meta.get("base_model", SD_MODEL_NAME) == SD_MODEL_NAME
 
     def remove_lora(self, lora_name: str):
         """Remove a LoRA adapter and reload the pipeline
@@ -281,3 +462,21 @@ class ImageGenerator:
         torch.cuda.empty_cache()  # Free GPU memory
         st.error(message)  # User-facing alert
         print(f"[ERROR] {message}")  # Debug logging
+
+
+    def get_active_loras(self) -> List[Dict]:
+        """Get info about currently loaded LoRAs"""
+        return [{
+            "name": lora["name"],
+            "weight": lora["weight"],
+            "metadata": self.all_loras.get(lora["name"], {})
+        } for lora in self.loaded_loras]
+
+    def get_loaded_adapters(self) -> List[str]:
+        """Get names of currently loaded LoRA adapters"""
+        if self.text2img_pipe is None:
+            return []
+        if hasattr(self.text2img_pipe, 'get_active_adapters'):
+            return self.text2img_pipe.get_active_adapters()
+        # Fallback: return the names from our list
+        return [lora['name'] for lora in self.loaded_loras]

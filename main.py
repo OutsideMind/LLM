@@ -1,18 +1,19 @@
 import streamlit as st
-from ui_main import (
+from umain import (
     setup_page,
     initialize_session_state,
     render_sidebar_controls,
     render_chat_container,
     handle_no_active_chat
 )
-from ui_text import handle_text_mode
-from ui_image import (
+from ui.utext import handle_text_mode
+from ui.uimage import (
     render_lora_settings,
     render_image_size_settings,
     render_advanced_image_settings,
     handle_image_generation
 )
+from ui.utraining import render_training_interface
 
 
 def main():
@@ -62,8 +63,8 @@ def main():
         handle_image_generation(active_chat, width, height)
 
     elif mode == "Training":
-        # Placeholder for future implementation
-        st.warning("Training mode under development")
+        # Заменяем старую логику на вызов нового интерфейса
+        render_training_interface()
 
 
 if __name__ == "__main__":

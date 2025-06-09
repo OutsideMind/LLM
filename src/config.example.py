@@ -8,8 +8,8 @@ MODEL_DIR = r"models"  # Root directory for all model files
 SD_MODEL_NAME = "Model name"
 SD_MODEL_DIR = os.path.join(MODEL_DIR,"model.safetensors")  # Main Stable Diffusion model
 LORA_DIR = os.path.join(MODEL_DIR, "LoRA")  # Directory for LoRA adapters (.safetensors files)
-SD_SAVE_PATH = "generated_images"  # Output directory for generated images
-TRAINING_DATA_PATH = "training_data"  # Dataset directory for model training
+SD_SAVE_PATH = "../generated_images"  # Output directory for generated images
+TRAINING_DATA_PATH = "../training_data"  # Dataset directory for model training
 LM_STUDIO_PATH = r"path/to/LM Studio.exe"  # LM Studio executable location
 
 # LoRA configuration (Stable Diffusion adapters)

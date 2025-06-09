@@ -4,8 +4,7 @@ import time
 from typing import Optional
 import requests
 from openai import OpenAI
-from config import *
-
+from src.config import *
 
 class ModelManager:
     """Manages lifecycle of LM Studio model server instances"""
