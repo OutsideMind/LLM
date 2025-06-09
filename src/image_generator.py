@@ -378,7 +378,7 @@ class ImageGenerator:
             # Build generation config with quality boosters
             config = {
                 "prompt": f"{kwargs.get('prompt', '')}, masterpiece, best quality, detailed",
-                "negative_prompt": f"{kwargs.get('negative_prompt', '')}, low quality, worst quality, bad anatomy",
+                "negative_prompt": f"{kwargs.get('negative_prompt', '')}, low quality, worst quality",
                 "num_inference_steps": kwargs.get("steps", 35),  # Optimal for Euler a
                 "guidance_scale": kwargs.get("guidance_scale", 6.0),  # Balanced creativity/accuracy
                 "width": kwargs.get("width", 1024),
